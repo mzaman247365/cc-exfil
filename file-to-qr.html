@@ -120,7 +120,7 @@
 
     <div class="info">
         <strong>How it works:</strong><br>
-        1. Select a file to encode and click "Generate QR Codes" (~2.9KB per code)<br>
+        1. Select a file to encode and click "Generate QR Codes" (~250 bytes per code for reliable scanning)<br>
         2. Use Previous/Next, Auto Play, or Audio Trigger (listens for 1500Hz tone)<br>
         3. Scan each QR code in order with your scanner app<br>
         4. Each QR contains JSON: <code>{"i": index, "t": total, "n": "filename", "d": "base64data"}</code>
@@ -655,9 +655,9 @@
     const fileInput = document.getElementById('fileInput');
     const generateBtn = document.getElementById('generateBtn');
 
-    // Max QR capacity is 2953 bytes (version 40, EC level L)
-    // Reserve ~50 bytes for JSON wrapper overhead
-    const MAX_CHUNK_SIZE = 2900;
+    // Use ~250 bytes per chunk for reliable scanning (creates version 10-12 QR codes)
+    // Version 40 (2900 bytes) is too dense for phone cameras to scan reliably
+    const MAX_CHUNK_SIZE = 250;
     const slideshowBtn = document.getElementById('slideshowBtn');
     const statusDiv = document.getElementById('status');
     const qrContainer = document.getElementById('qr-container');
@@ -785,7 +785,7 @@
     function renderSlide() {
         const canvas = document.getElementById('slideshowCanvas');
         document.getElementById('slideIndex').textContent = currentSlide + 1;
-        QRCode.toCanvas(canvas, qrDataList[currentSlide], { scale: 8, margin: 2 });
+        QRCode.toCanvas(canvas, qrDataList[currentSlide], { scale: 12, margin: 4 });
     }
 
     function nextSlide() {
