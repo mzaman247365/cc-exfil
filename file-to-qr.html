@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File to QR Codes</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 { color: #333; }
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .controls label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: 500;
+        }
+        .controls input[type="file"] { margin-bottom: 15px; }
+        .controls input[type="number"] {
+            width: 100px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 10px;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .info {
+            background: #e7f3ff;
+            border: 1px solid #b3d7ff;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .info code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        #status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        #status.success { background: #d4edda; color: #155724; }
+        #status.error { background: #f8d7da; color: #721c24; }
+        #qr-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 20px;
+        }
+        .qr-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .qr-item canvas { max-width: 100%; height: auto; }
+        .qr-item p { margin: 10px 0 0 0; font-weight: 500; color: #666; }
+        .progress {
+            width: 100%;
+            height: 20px;
+            background: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-bar { height: 100%; background: #007bff; transition: width 0.3s; }
+        #slideshow {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: white;
+            z-index: 1000;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        #slideshow canvas { max-width: 80vmin; max-height: 80vmin; }
+        #slideshow .nav-controls {
+            position: absolute;
+            bottom: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        #slideshow .counter {
+            position: absolute;
+            top: 20px;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .close-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <h1>File to QR Codes</h1>
+
+    <div class="info">
+        <strong>How it works:</strong><br>
+        1. Select a file to encode and click "Generate QR Codes" (~2.9KB per code)<br>
+        2. Use Previous/Next, Auto Play, or Audio Trigger (listens for 1500Hz tone)<br>
+        3. Scan each QR code in order with your scanner app<br>
+        4. Each QR contains JSON: <code>{"i": index, "t": total, "n": "filename", "d": "base64data"}</code>
+    </div>
+
+    <div class="controls">
+        <label>Select File:
+            <input type="file" id="fileInput">
+        </label>
+        <br>
+        <button id="generateBtn" disabled>Generate QR Codes</button>
+        <button id="slideshowBtn" disabled>Slideshow Mode</button>
+    </div>
+
+    <div id="status"></div>
+    <div class="progress" style="display:none;">
+        <div class="progress-bar" id="progressBar"></div>
+    </div>
+
+    <div id="qr-container"></div>
+
+    <div id="slideshow">
+        <button class="close-btn" onclick="closeSlideshow()">Close</button>
+        <div class="counter"><span id="slideIndex">1</span> / <span id="slideTotal">1</span></div>
+        <canvas id="slideshowCanvas"></canvas>
+        <div class="nav-controls">
+            <button onclick="prevSlide()">Previous</button>
+            <button onclick="toggleAutoPlay()" id="autoPlayBtn">Auto Play</button>
+            <button onclick="toggleAudioTrigger()" id="audioTriggerBtn">Audio Trigger</button>
+            <button onclick="nextSlide()">Next</button>
+        </div>
+        <div id="audioStatus" style="position:absolute; bottom: 70px; font-size: 14px; color: #666;"></div>
+    </div>
+
+    <script>
+    // ============== QR Code Generator (No Dependencies) ==============
+    const QRCode = (function() {
+        // QR Code constants
+        const EC_LEVEL = { L: 1, M: 0, Q: 3, H: 2 };
+
+        // Error correction codewords and blocks for versions 1-40, EC level L
+        const EC_TABLE = [
+            null,
+            [7,1,19,0,0],[10,1,34,0,0],[15,1,55,0,0],[20,1,80,0,0],[26,1,108,0,0],
+            [18,2,68,0,0],[20,2,78,0,0],[24,2,97,0,0],[30,2,116,0,0],[18,2,68,2,69],
+            [20,4,81,0,0],[24,2,92,2,93],[26,4,107,0,0],[30,3,115,1,116],[22,5,87,1,88],
+            [24,5,98,1,99],[28,1,107,5,108],[30,5,120,1,121],[28,3,113,4,114],[28,3,107,5,108],
+            [28,4,116,4,117],[28,2,111,7,112],[30,4,121,5,122],[30,6,117,4,118],[26,8,106,4,107],
+            [28,10,114,2,115],[30,8,122,4,123],[30,3,117,10,118],[30,7,116,7,117],[30,5,115,10,116],
+            [30,13,115,3,116],[30,17,115,0,0],[30,17,115,1,116],[30,13,115,6,116],[30,12,121,7,122],
+            [30,6,121,14,122],[30,17,122,4,123],[30,4,122,18,123],[30,20,117,4,118],[30,19,118,6,119]
+        ];
+
+        // Data capacity for versions 1-40, EC level L, byte mode
+        const CAPACITY = [
+            0,17,32,53,78,106,134,154,192,230,271,321,367,425,458,520,586,644,718,792,
+            858,929,1003,1091,1171,1273,1367,1465,1528,1628,1732,1840,1952,2068,2188,2303,
+            2431,2563,2699,2809,2953
+        ];
+
+        // Generator polynomials for Reed-Solomon
+        const GEN_POLY = {};
+
+        function getGenPoly(degree) {
+            if (GEN_POLY[degree]) return GEN_POLY[degree];
+            let poly = [1];
+            for (let i = 0; i < degree; i++) {
+                poly = polyMul(poly, [1, gfPow(2, i)]);
+            }
+            GEN_POLY[degree] = poly;
+            return poly;
+        }
+
+        // Galois Field math
+        const GF_EXP = new Array(512);
+        const GF_LOG = new Array(256);
+        (function() {
+            let x = 1;
+            for (let i = 0; i < 255; i++) {
+                GF_EXP[i] = x;
+                GF_LOG[x] = i;
+                x <<= 1;
+                if (x & 0x100) x ^= 0x11d;
+            }
+            for (let i = 255; i < 512; i++) {
+                GF_EXP[i] = GF_EXP[i - 255];
+            }
+        })();
+
+        function gfPow(x, power) { return GF_EXP[(GF_LOG[x] * power) % 255]; }
+        function gfMul(x, y) { return x === 0 || y === 0 ? 0 : GF_EXP[GF_LOG[x] + GF_LOG[y]]; }
+
+        function polyMul(p1, p2) {
+            const result = new Array(p1.length + p2.length - 1).fill(0);
+            for (let i = 0; i < p1.length; i++) {
+                for (let j = 0; j < p2.length; j++) {
+                    result[i + j] ^= gfMul(p1[i], p2[j]);
+                }
+            }
+            return result;
+        }
+
+        function rsEncode(data, nsym) {
+            const gen = getGenPoly(nsym);
+            const result = new Array(data.length + nsym).fill(0);
+            for (let i = 0; i < data.length; i++) result[i] = data[i];
+
+            for (let i = 0; i < data.length; i++) {
+                const coef = result[i];
+                if (coef !== 0) {
+                    for (let j = 0; j < gen.length; j++) {
+                        result[i + j] ^= gfMul(gen[j], coef);
+                    }
+                }
+            }
+            return result.slice(data.length);
+        }
+
+        function getVersion(dataLen) {
+            for (let v = 1; v <= 40; v++) {
+                if (CAPACITY[v] >= dataLen) return v;
+            }
+            throw new Error('Data too long for QR code');
+        }
+
+        function getSize(version) { return 17 + version * 4; }
+
+        function encodeData(text, version) {
+            const data = [];
+            // Byte mode indicator (0100)
+            data.push(0x40 | (text.length >> 4));
+            data.push(((text.length & 0xf) << 4) | (text.charCodeAt(0) >> 4));
+
+            for (let i = 0; i < text.length; i++) {
+                const c = text.charCodeAt(i);
+                if (i > 0) data.push(((text.charCodeAt(i-1) & 0xf) << 4) | (c >> 4));
+                if (i === text.length - 1) data.push((c & 0xf) << 4);
+            }
+
+            // Terminator
+            const capacity = CAPACITY[version];
+            while (data.length < capacity) {
+                data.push(0xec);
+                if (data.length < capacity) data.push(0x11);
+            }
+
+            return data.slice(0, capacity);
+        }
+
+        function encodeDataSimple(text, version) {
+            const bytes = new TextEncoder().encode(text);
+            const bits = [];
+
+            // Mode indicator: byte mode = 0100
+            bits.push(0, 1, 0, 0);
+
+            // Character count (8 bits for v1-9, 16 bits for v10+)
+            const ccBits = version < 10 ? 8 : 16;
+            for (let i = ccBits - 1; i >= 0; i--) {
+                bits.push((bytes.length >> i) & 1);
+            }
+
+            // Data
+            for (const byte of bytes) {
+                for (let i = 7; i >= 0; i--) {
+                    bits.push((byte >> i) & 1);
+                }
+            }
+
+            // Terminator (up to 4 zeros)
+            const ecInfo = EC_TABLE[version];
+            const totalDataCodewords = ecInfo[1] * ecInfo[2] + ecInfo[3] * ecInfo[4];
+            const totalBits = totalDataCodewords * 8;
+
+            for (let i = 0; i < 4 && bits.length < totalBits; i++) {
+                bits.push(0);
+            }
+
+            // Pad to byte boundary
+            while (bits.length % 8 !== 0) bits.push(0);
+
+            // Pad codewords
+            let padToggle = true;
+            while (bits.length < totalBits) {
+                const pad = padToggle ? 0xec : 0x11;
+                for (let i = 7; i >= 0; i--) bits.push((pad >> i) & 1);
+                padToggle = !padToggle;
+            }
+
+            // Convert to bytes
+            const data = [];
+            for (let i = 0; i < bits.length; i += 8) {
+                let byte = 0;
+                for (let j = 0; j < 8; j++) byte = (byte << 1) | bits[i + j];
+                data.push(byte);
+            }
+
+            return data;
+        }
+
+        function addErrorCorrection(data, version) {
+            const ecInfo = EC_TABLE[version];
+            const ecCodewords = ecInfo[0];
+            const group1Blocks = ecInfo[1];
+            const group1DataCw = ecInfo[2];
+            const group2Blocks = ecInfo[3];
+            const group2DataCw = ecInfo[4];
+
+            const blocks = [];
+            let offset = 0;
+
+            for (let i = 0; i < group1Blocks; i++) {
+                blocks.push(data.slice(offset, offset + group1DataCw));
+                offset += group1DataCw;
+            }
+            for (let i = 0; i < group2Blocks; i++) {
+                blocks.push(data.slice(offset, offset + group2DataCw));
+                offset += group2DataCw;
+            }
+
+            const ecBlocks = blocks.map(block => rsEncode(block, ecCodewords));
+
+            // Interleave data
+            const result = [];
+            const maxDataLen = Math.max(group1DataCw, group2DataCw);
+            for (let i = 0; i < maxDataLen; i++) {
+                for (const block of blocks) {
+                    if (i < block.length) result.push(block[i]);
+                }
+            }
+
+            // Interleave EC
+            for (let i = 0; i < ecCodewords; i++) {
+                for (const ec of ecBlocks) {
+                    result.push(ec[i]);
+                }
+            }
+
+            return result;
+        }
+
+        function createMatrix(version) {
+            const size = getSize(version);
+            const matrix = [];
+            for (let i = 0; i < size; i++) {
+                matrix.push(new Array(size).fill(null));
+            }
+            return matrix;
+        }
+
+        function addFinderPattern(matrix, row, col) {
+            for (let r = -1; r <= 7; r++) {
+                for (let c = -1; c <= 7; c++) {
+                    const tr = row + r, tc = col + c;
+                    if (tr < 0 || tc < 0 || tr >= matrix.length || tc >= matrix.length) continue;
+
+                    if (r === -1 || r === 7 || c === -1 || c === 7) {
+                        matrix[tr][tc] = 0; // White separator
+                    } else if (r === 0 || r === 6 || c === 0 || c === 6) {
+                        matrix[tr][tc] = 1; // Black border
+                    } else if (r >= 2 && r <= 4 && c >= 2 && c <= 4) {
+                        matrix[tr][tc] = 1; // Black center
+                    } else {
+                        matrix[tr][tc] = 0; // White inner
+                    }
+                }
+            }
+        }
+
+        function addAlignmentPattern(matrix, row, col) {
+            for (let r = -2; r <= 2; r++) {
+                for (let c = -2; c <= 2; c++) {
+                    const tr = row + r, tc = col + c;
+                    if (matrix[tr][tc] !== null) return;
+                }
+            }
+            for (let r = -2; r <= 2; r++) {
+                for (let c = -2; c <= 2; c++) {
+                    const tr = row + r, tc = col + c;
+                    if (Math.abs(r) === 2 || Math.abs(c) === 2 || (r === 0 && c === 0)) {
+                        matrix[tr][tc] = 1;
+                    } else {
+                        matrix[tr][tc] = 0;
+                    }
+                }
+            }
+        }
+
+        const ALIGNMENT_POSITIONS = [
+            null, [], [6,18], [6,22], [6,26], [6,30], [6,34],
+            [6,22,38], [6,24,42], [6,26,46], [6,28,50], [6,30,54], [6,32,58], [6,34,62],
+            [6,26,46,66], [6,26,48,70], [6,26,50,74], [6,30,54,78], [6,30,56,82], [6,30,58,86], [6,34,62,90],
+            [6,28,50,72,94], [6,26,50,74,98], [6,30,54,78,102], [6,28,54,80,106], [6,32,58,84,110], [6,30,58,86,114], [6,34,62,90,118],
+            [6,26,50,74,98,122], [6,30,54,78,102,126], [6,26,52,78,104,130], [6,30,56,82,108,134], [6,34,60,86,112,138], [6,30,58,86,114,142], [6,34,62,90,118,146],
+            [6,30,54,78,102,126,150], [6,24,50,76,102,128,154], [6,28,54,80,106,132,158], [6,32,58,84,110,136,162], [6,26,54,82,110,138,166], [6,30,58,86,114,142,170]
+        ];
+
+        function addTimingPatterns(matrix) {
+            const size = matrix.length;
+            for (let i = 8; i < size - 8; i++) {
+                const bit = (i + 1) % 2;
+                if (matrix[6][i] === null) matrix[6][i] = bit;
+                if (matrix[i][6] === null) matrix[i][6] = bit;
+            }
+        }
+
+        function addFormatInfo(matrix, mask) {
+            const size = matrix.length;
+            // Format info for EC level L and given mask
+            const formatBits = FORMAT_INFO[mask];
+
+            // Around top-left finder
+            for (let i = 0; i < 6; i++) matrix[8][i] = (formatBits >> (14 - i)) & 1;
+            matrix[8][7] = (formatBits >> 8) & 1;
+            matrix[8][8] = (formatBits >> 7) & 1;
+            matrix[7][8] = (formatBits >> 6) & 1;
+            for (let i = 0; i < 6; i++) matrix[5 - i][8] = (formatBits >> (5 - i)) & 1;
+
+            // Around top-right and bottom-left finders
+            for (let i = 0; i < 8; i++) matrix[8][size - 1 - i] = (formatBits >> i) & 1;
+            for (let i = 0; i < 7; i++) matrix[size - 7 + i][8] = (formatBits >> (14 - i)) & 1;
+
+            // Dark module
+            matrix[size - 8][8] = 1;
+        }
+
+        // Pre-computed format info for EC level L (01) and masks 0-7
+        const FORMAT_INFO = [
+            0x77c4, 0x72f3, 0x7daa, 0x789d, 0x662f, 0x6318, 0x6c41, 0x6976
+        ];
+
+        function addVersionInfo(matrix, version) {
+            if (version < 7) return;
+
+            const size = matrix.length;
+            const versionBits = VERSION_INFO[version];
+
+            for (let i = 0; i < 18; i++) {
+                const bit = (versionBits >> i) & 1;
+                const row = Math.floor(i / 3);
+                const col = i % 3;
+                matrix[5 - row][size - 9 - col] = bit;
+                matrix[size - 9 - col][5 - row] = bit;
+            }
+        }
+
+        const VERSION_INFO = [
+            null, null, null, null, null, null, null,
+            0x07c94, 0x085bc, 0x09a99, 0x0a4d3, 0x0bbf6, 0x0c762, 0x0d847, 0x0e60d,
+            0x0f928, 0x10b78, 0x1145d, 0x12a17, 0x13532, 0x149a6, 0x15683, 0x168c9,
+            0x177ec, 0x18ec4, 0x191e1, 0x1afab, 0x1b08e, 0x1cc1a, 0x1d33f, 0x1ed75,
+            0x1f250, 0x209d5, 0x216f0, 0x228ba, 0x2379f, 0x24b0b, 0x2542e, 0x26a64,
+            0x27541, 0x28c69
+        ];
+
+        function placeData(matrix, data) {
+            const size = matrix.length;
+            const bits = [];
+            for (const byte of data) {
+                for (let i = 7; i >= 0; i--) bits.push((byte >> i) & 1);
+            }
+
+            let bitIndex = 0;
+            let upward = true;
+
+            for (let col = size - 1; col >= 1; col -= 2) {
+                if (col === 6) col = 5; // Skip timing column
+
+                for (let row = 0; row < size; row++) {
+                    const actualRow = upward ? size - 1 - row : row;
+
+                    for (let c = 0; c < 2; c++) {
+                        const actualCol = col - c;
+                        if (matrix[actualRow][actualCol] === null) {
+                            matrix[actualRow][actualCol] = bitIndex < bits.length ? bits[bitIndex++] : 0;
+                        }
+                    }
+                }
+                upward = !upward;
+            }
+        }
+
+        function applyMask(matrix, mask) {
+            const size = matrix.length;
+            const maskFn = MASK_FUNCTIONS[mask];
+            const result = matrix.map(row => [...row]);
+
+            for (let row = 0; row < size; row++) {
+                for (let col = 0; col < size; col++) {
+                    if (isDataModule(matrix, row, col, size)) {
+                        if (maskFn(row, col)) {
+                            result[row][col] ^= 1;
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+
+        const MASK_FUNCTIONS = [
+            (r, c) => (r + c) % 2 === 0,
+            (r, c) => r % 2 === 0,
+            (r, c) => c % 3 === 0,
+            (r, c) => (r + c) % 3 === 0,
+            (r, c) => (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0,
+            (r, c) => ((r * c) % 2) + ((r * c) % 3) === 0,
+            (r, c) => (((r * c) % 2) + ((r * c) % 3)) % 2 === 0,
+            (r, c) => (((r + c) % 2) + ((r * c) % 3)) % 2 === 0
+        ];
+
+        function isDataModule(matrix, row, col, size) {
+            // Check if this is a data/EC module (not a function pattern)
+            // Finder patterns
+            if (row < 9 && col < 9) return false;
+            if (row < 9 && col >= size - 8) return false;
+            if (row >= size - 8 && col < 9) return false;
+            // Timing patterns
+            if (row === 6 || col === 6) return false;
+            return true;
+        }
+
+        function evaluateMask(matrix) {
+            // Simplified penalty calculation
+            let penalty = 0;
+            const size = matrix.length;
+
+            // Rule 1: Consecutive modules in row/column
+            for (let i = 0; i < size; i++) {
+                let rowRun = 1, colRun = 1;
+                for (let j = 1; j < size; j++) {
+                    if (matrix[i][j] === matrix[i][j-1]) rowRun++; else { if (rowRun >= 5) penalty += rowRun - 2; rowRun = 1; }
+                    if (matrix[j][i] === matrix[j-1][i]) colRun++; else { if (colRun >= 5) penalty += colRun - 2; colRun = 1; }
+                }
+                if (rowRun >= 5) penalty += rowRun - 2;
+                if (colRun >= 5) penalty += colRun - 2;
+            }
+
+            return penalty;
+        }
+
+        function generate(text) {
+            const bytes = new TextEncoder().encode(text);
+            const version = getVersion(bytes.length);
+            const size = getSize(version);
+
+            // Create matrix and add function patterns
+            let matrix = createMatrix(version);
+
+            // Finder patterns
+            addFinderPattern(matrix, 0, 0);
+            addFinderPattern(matrix, 0, size - 7);
+            addFinderPattern(matrix, size - 7, 0);
+
+            // Alignment patterns
+            const alignPos = ALIGNMENT_POSITIONS[version];
+            if (alignPos && alignPos.length > 0) {
+                for (const row of alignPos) {
+                    for (const col of alignPos) {
+                        addAlignmentPattern(matrix, row, col);
+                    }
+                }
+            }
+
+            // Timing patterns
+            addTimingPatterns(matrix);
+
+            // Reserve format info areas
+            for (let i = 0; i < 9; i++) {
+                if (matrix[8][i] === null) matrix[8][i] = 0;
+                if (matrix[i][8] === null) matrix[i][8] = 0;
+                if (i < 8) {
+                    if (matrix[8][size - 1 - i] === null) matrix[8][size - 1 - i] = 0;
+                    if (matrix[size - 1 - i][8] === null) matrix[size - 1 - i][8] = 0;
+                }
+            }
+
+            // Encode and place data
+            const data = encodeDataSimple(text, version);
+            const finalData = addErrorCorrection(data, version);
+            placeData(matrix, finalData);
+
+            // Find best mask
+            let bestMask = 0;
+            let bestPenalty = Infinity;
+            for (let mask = 0; mask < 8; mask++) {
+                const masked = applyMask(matrix, mask);
+                addFormatInfo(masked, mask);
+                addVersionInfo(masked, version);
+                const penalty = evaluateMask(masked);
+                if (penalty < bestPenalty) {
+                    bestPenalty = penalty;
+                    bestMask = mask;
+                }
+            }
+
+            // Apply best mask
+            matrix = applyMask(matrix, bestMask);
+            addFormatInfo(matrix, bestMask);
+            addVersionInfo(matrix, version);
+
+            return matrix;
+        }
+
+        function toCanvas(canvas, text, options = {}) {
+            const matrix = generate(text);
+            const size = matrix.length;
+            const scale = options.scale || 4;
+            const margin = options.margin !== undefined ? options.margin : 4;
+
+            const totalSize = (size + margin * 2) * scale;
+            canvas.width = totalSize;
+            canvas.height = totalSize;
+
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, totalSize, totalSize);
+
+            ctx.fillStyle = '#000000';
+            for (let row = 0; row < size; row++) {
+                for (let col = 0; col < size; col++) {
+                    if (matrix[row][col]) {
+                        ctx.fillRect((col + margin) * scale, (row + margin) * scale, scale, scale);
+                    }
+                }
+            }
+        }
+
+        return { generate, toCanvas };
+    })();
+
+    // ============== Main Application ==============
+    const fileInput = document.getElementById('fileInput');
+    const generateBtn = document.getElementById('generateBtn');
+
+    // Max QR capacity is 2953 bytes (version 40, EC level L)
+    // Reserve ~50 bytes for JSON wrapper overhead
+    const MAX_CHUNK_SIZE = 2900;
+    const slideshowBtn = document.getElementById('slideshowBtn');
+    const statusDiv = document.getElementById('status');
+    const qrContainer = document.getElementById('qr-container');
+    const progressBar = document.getElementById('progressBar');
+    const progressContainer = document.querySelector('.progress');
+
+    let qrDataList = [];
+    let currentSlide = 0;
+    let autoPlayInterval = null;
+    let audioContext = null;
+    let analyser = null;
+    let audioStream = null;
+    let audioTriggerActive = false;
+    let audioCheckInterval = null;
+
+    fileInput.addEventListener('change', () => {
+        generateBtn.disabled = !fileInput.files.length;
+    });
+
+    generateBtn.addEventListener('click', generateQRCodes);
+    slideshowBtn.addEventListener('click', openSlideshow);
+
+    async function generateQRCodes() {
+        const file = fileInput.files[0];
+        if (!file) return;
+
+        const chunkSize = MAX_CHUNK_SIZE;
+
+        statusDiv.textContent = 'Reading file...';
+        statusDiv.className = '';
+        qrContainer.innerHTML = '';
+        qrDataList = [];
+        progressContainer.style.display = 'block';
+        progressBar.style.width = '0%';
+
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const bytes = new Uint8Array(arrayBuffer);
+            const base64 = uint8ArrayToBase64(bytes);
+
+            const totalChunks = Math.ceil(base64.length / chunkSize);
+            const chunks = [];
+
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * chunkSize;
+                const end = Math.min(start + chunkSize, base64.length);
+                const chunkData = base64.slice(start, end);
+
+                const payload = i === 0
+                    ? JSON.stringify({ i, t: totalChunks, n: file.name, d: chunkData })
+                    : JSON.stringify({ i, t: totalChunks, d: chunkData });
+
+                chunks.push(payload);
+            }
+
+            statusDiv.textContent = `Generating ${totalChunks} QR codes...`;
+
+            for (let i = 0; i < chunks.length; i++) {
+                const qrItem = document.createElement('div');
+                qrItem.className = 'qr-item';
+
+                const canvas = document.createElement('canvas');
+                QRCode.toCanvas(canvas, chunks[i], { scale: 4, margin: 2 });
+                qrItem.appendChild(canvas);
+
+                const label = document.createElement('p');
+                label.textContent = `Chunk ${i + 1} of ${totalChunks}`;
+                qrItem.appendChild(label);
+
+                qrContainer.appendChild(qrItem);
+                qrDataList.push(chunks[i]);
+                progressBar.style.width = ((i + 1) / totalChunks * 100) + '%';
+
+                if (i % 5 === 0) await new Promise(r => setTimeout(r, 10));
+            }
+
+            statusDiv.textContent = `Generated ${totalChunks} QR codes for "${file.name}" (${formatBytes(file.size)})`;
+            statusDiv.className = 'success';
+            slideshowBtn.disabled = false;
+
+            // Auto-open slideshow
+            openSlideshow();
+
+        } catch (error) {
+            statusDiv.textContent = 'Error: ' + error.message;
+            statusDiv.className = 'error';
+            console.error(error);
+        }
+    }
+
+    function uint8ArrayToBase64(bytes) {
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+    }
+
+    function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    function openSlideshow() {
+        if (qrDataList.length === 0) return;
+        currentSlide = 0;
+        document.getElementById('slideshow').style.display = 'flex';
+        document.getElementById('slideTotal').textContent = qrDataList.length;
+        renderSlide();
+    }
+
+    function closeSlideshow() {
+        document.getElementById('slideshow').style.display = 'none';
+        if (autoPlayInterval) {
+            clearInterval(autoPlayInterval);
+            autoPlayInterval = null;
+            document.getElementById('autoPlayBtn').textContent = 'Auto Play';
+        }
+        if (audioTriggerActive) {
+            stopAudioTrigger();
+        }
+    }
+
+    function renderSlide() {
+        const canvas = document.getElementById('slideshowCanvas');
+        document.getElementById('slideIndex').textContent = currentSlide + 1;
+        QRCode.toCanvas(canvas, qrDataList[currentSlide], { scale: 8, margin: 2 });
+    }
+
+    function nextSlide() {
+        currentSlide = (currentSlide + 1) % qrDataList.length;
+        renderSlide();
+    }
+
+    function prevSlide() {
+        currentSlide = (currentSlide - 1 + qrDataList.length) % qrDataList.length;
+        renderSlide();
+    }
+
+    function toggleAutoPlay() {
+        const btn = document.getElementById('autoPlayBtn');
+        if (autoPlayInterval) {
+            clearInterval(autoPlayInterval);
+            autoPlayInterval = null;
+            btn.textContent = 'Auto Play';
+        } else {
+            // Stop audio trigger if active
+            if (audioTriggerActive) stopAudioTrigger();
+            autoPlayInterval = setInterval(nextSlide, 2000);
+            btn.textContent = 'Stop';
+        }
+    }
+
+    async function toggleAudioTrigger() {
+        if (audioTriggerActive) {
+            stopAudioTrigger();
+        } else {
+            await startAudioTrigger();
+        }
+    }
+
+    async function startAudioTrigger() {
+        const btn = document.getElementById('audioTriggerBtn');
+        const status = document.getElementById('audioStatus');
+
+        // Stop autoplay if active
+        if (autoPlayInterval) {
+            clearInterval(autoPlayInterval);
+            autoPlayInterval = null;
+            document.getElementById('autoPlayBtn').textContent = 'Auto Play';
+        }
+
+        try {
+            audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 2048;
+
+            const source = audioContext.createMediaStreamSource(audioStream);
+            source.connect(analyser);
+
+            audioTriggerActive = true;
+            btn.textContent = 'Stop Audio';
+            status.textContent = 'Listening for 1500Hz tone...';
+
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            const targetFreq = 1500;
+            const sampleRate = audioContext.sampleRate;
+            const binSize = sampleRate / analyser.fftSize;
+            const targetBin = Math.round(targetFreq / binSize);
+
+            let cooldown = false;
+
+            audioCheckInterval = setInterval(() => {
+                if (cooldown) return;
+
+                analyser.getByteFrequencyData(dataArray);
+
+                // Check bins around target frequency
+                let maxAmplitude = 0;
+                for (let i = targetBin - 2; i <= targetBin + 2; i++) {
+                    if (i >= 0 && i < bufferLength) {
+                        maxAmplitude = Math.max(maxAmplitude, dataArray[i]);
+                    }
+                }
+
+                // Calculate average amplitude for comparison
+                let avgAmplitude = 0;
+                for (let i = 0; i < bufferLength; i++) {
+                    avgAmplitude += dataArray[i];
+                }
+                avgAmplitude /= bufferLength;
+
+                // Trigger if 1500Hz is significantly above average
+                if (maxAmplitude > 150 && maxAmplitude > avgAmplitude * 3) {
+                    status.textContent = 'Tone detected! Moving to next...';
+                    nextSlide();
+                    cooldown = true;
+
+                    // Check if we're done
+                    if (currentSlide === 0) {
+                        status.textContent = 'Complete! All QR codes shown.';
+                        stopAudioTrigger();
+                        return;
+                    }
+
+                    setTimeout(() => {
+                        cooldown = false;
+                        if (audioTriggerActive) {
+                            status.textContent = 'Listening for 1500Hz tone...';
+                        }
+                    }, 500);
+                }
+            }, 50);
+
+        } catch (error) {
+            status.textContent = 'Microphone access denied';
+            console.error('Audio error:', error);
+        }
+    }
+
+    function stopAudioTrigger() {
+        const btn = document.getElementById('audioTriggerBtn');
+        const status = document.getElementById('audioStatus');
+
+        audioTriggerActive = false;
+        btn.textContent = 'Audio Trigger';
+
+        if (audioCheckInterval) {
+            clearInterval(audioCheckInterval);
+            audioCheckInterval = null;
+        }
+
+        if (audioContext) {
+            audioContext.close();
+            audioContext = null;
+        }
+
+        if (audioStream) {
+            audioStream.getTracks().forEach(track => track.stop());
+            audioStream = null;
+        }
+
+        status.textContent = '';
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (document.getElementById('slideshow').style.display === 'flex') {
+            if (e.key === 'ArrowRight' || e.key === ' ') nextSlide();
+            if (e.key === 'ArrowLeft') prevSlide();
+            if (e.key === 'Escape') closeSlideshow();
+        }
+    });
+    </script>
+
+    <hr style="margin-top: 40px;">
+
+    <h2>Reconstruction Script (for scanner device)</h2>
+    <p>Save this as an HTML file on your scanning device to reconstruct the file:</p>
+    <textarea id="reconstructCode" readonly style="width:100%; height:300px; font-family:monospace; font-size:12px;">
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Reconstruction</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; max-width: 600px; margin: 0 auto; }
+        textarea { width: 100%; height: 100px; margin: 10px 0; }
+        button { padding: 10px 20px; margin: 5px; }
+        #status { padding: 10px; margin: 10px 0; background: #e7f3ff; }
+        .chunk { display: inline-block; width: 20px; height: 20px; margin: 2px; background: #ddd; }
+        .chunk.received { background: #4caf50; }
+    </style>
+</head>
+<body>
+    <h1>QR File Reconstruction</h1>
+    <p>Paste each scanned QR code data below:</p>
+    <textarea id="input" placeholder='Paste QR data here (JSON format)'></textarea>
+    <button onclick="addChunk()">Add Chunk</button>
+    <button onclick="reconstruct()">Download File</button>
+    <button onclick="clearAll()">Clear All</button>
+    <div id="status">No chunks received yet</div>
+    <div id="chunks"></div>
+
+    <script>
+        let chunks = {};
+        let totalChunks = 0;
+        let fileName = 'reconstructed_file';
+
+        function addChunk() {
+            const input = document.getElementById('input').value.trim();
+            if (!input) return;
+
+            try {
+                const data = JSON.parse(input);
+                chunks[data.i] = data.d;
+                if (data.t) totalChunks = data.t;
+                if (data.n) fileName = data.n;
+
+                updateStatus();
+                document.getElementById('input').value = '';
+            } catch(e) {
+                alert('Invalid JSON: ' + e.message);
+            }
+        }
+
+        function updateStatus() {
+            const received = Object.keys(chunks).length;
+            document.getElementById('status').innerHTML =
+                'File: ' + fileName + '<br>' +
+                'Received: ' + received + ' / ' + totalChunks + ' chunks';
+
+            let html = '';
+            for (let i = 0; i < totalChunks; i++) {
+                html += '<div class="chunk ' + (chunks[i] !== undefined ? 'received' : '') + '" title="Chunk ' + i + '"></div>';
+            }
+            document.getElementById('chunks').innerHTML = html;
+        }
+
+        function reconstruct() {
+            if (Object.keys(chunks).length !== totalChunks) {
+                alert('Missing chunks! Have ' + Object.keys(chunks).length + ' of ' + totalChunks);
+                return;
+            }
+
+            let base64 = '';
+            for (let i = 0; i < totalChunks; i++) {
+                base64 += chunks[i];
+            }
+
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+
+            const blob = new Blob([bytes]);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function clearAll() {
+            chunks = {};
+            totalChunks = 0;
+            fileName = 'reconstructed_file';
+            document.getElementById('status').textContent = 'No chunks received yet';
+            document.getElementById('chunks').innerHTML = '';
+        }
+    </script>
+</body>
+</html>
+    </textarea>
+    <button onclick="copyReconstruct()">Copy Reconstruction Code</button>
+
+    <script>
+        function copyReconstruct() {
+            const textarea = document.getElementById('reconstructCode');
+            textarea.select();
+            document.execCommand('copy');
+            alert('Copied to clipboard!');
+        }
+    </script>
+</body>
+</html>
